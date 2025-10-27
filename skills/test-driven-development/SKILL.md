@@ -73,49 +73,64 @@ digraph tdd_cycle {
 Write one minimal test showing what should happen.
 
 <Good>
-```typescript
-test('retries failed operations 3 times', async () => {
-  let attempts = 0;
-  const operation = () => {
-    attempts++;
-    if (attempts < 3) throw new Error('fail');
-    return 'success';
-  };
+```ruby
+# spec/services/retry_operation_spec.rb
+RSpec.describe RetryOperation do
+  subject(:retry_operation) { described_class.new }
 
-  const result = await retryOperation(operation);
+  describe "#call" do
+    context "when operation fails twice then succeeds" do
+      let(:attempts) { [] }
+      let(:operation) do
+        -> {
+          attempts << Time.current
+          raise StandardError, "fail" if attempts.count < 3
+          "success"
+        }
+      end
 
-  expect(result).toBe('success');
-  expect(attempts).toBe(3);
-});
+      it "retries 3 times total" do
+        result = retry_operation.call(operation)
+
+        expect(result).to eq("success")
+        expect(attempts.count).to eq(3)
+      end
+    end
+  end
+end
 ```
-Clear name, tests real behavior, one thing
+Follows BetterSpecs: uses `describe`, `context`, `subject`, `let`, clear name, tests real behavior
 </Good>
 
 <Bad>
-```typescript
-test('retry works', async () => {
-  const mock = jest.fn()
-    .mockRejectedValueOnce(new Error())
-    .mockRejectedValueOnce(new Error())
-    .mockResolvedValueOnce('success');
-  await retryOperation(mock);
-  expect(mock).toHaveBeenCalledTimes(3);
-});
+```ruby
+RSpec.describe RetryOperation do
+  it "works" do
+    mock = double
+    allow(mock).to receive(:call)
+      .and_raise(StandardError).twice
+      .and_return("success")
+
+    described_class.new.call(-> { mock.call })
+    expect(mock).to have_received(:call).exactly(3).times
+  end
+end
 ```
-Vague name, tests mock not code
+Vague name, tests mock behavior not code, no `describe`/`context` organization
 </Bad>
 
 **Requirements:**
-- One behavior
-- Clear name
+- One behavior per example
+- Clear, descriptive names
 - Real code (no mocks unless unavoidable)
+- Follow BetterSpecs structure (describe/context/subject/let)
 
 ### Verify RED - Watch It Fail
 
 **MANDATORY. Never skip.**
 
 ```bash
-npm test path/to/test.test.ts
+bundle exec rspec spec/services/retry_operation_spec.rb
 ```
 
 Confirm:
@@ -132,33 +147,35 @@ Confirm:
 Write simplest code to pass the test.
 
 <Good>
-```typescript
-async function retryOperation<T>(fn: () => Promise<T>): Promise<T> {
-  for (let i = 0; i < 3; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i === 2) throw e;
-    }
-  }
-  throw new Error('unreachable');
-}
+```ruby
+# app/services/retry_operation.rb
+class RetryOperation
+  def call(operation)
+    3.times do |attempt|
+      return operation.call
+    rescue StandardError => e
+      raise e if attempt == 2
+    end
+  end
+end
 ```
 Just enough to pass
 </Good>
 
 <Bad>
-```typescript
-async function retryOperation<T>(
-  fn: () => Promise<T>,
-  options?: {
-    maxRetries?: number;
-    backoff?: 'linear' | 'exponential';
-    onRetry?: (attempt: number) => void;
-  }
-): Promise<T> {
-  // YAGNI
-}
+```ruby
+# app/services/retry_operation.rb
+class RetryOperation
+  def initialize(max_retries: 3, backoff: :linear, on_retry: nil)
+    @max_retries = max_retries
+    @backoff = backoff
+    @on_retry = on_retry
+  end
+
+  def call(operation)
+    # YAGNI - over-engineered for passing test
+  end
+end
 ```
 Over-engineered
 </Bad>
@@ -170,13 +187,13 @@ Don't add features, refactor other code, or "improve" beyond the test.
 **MANDATORY.**
 
 ```bash
-npm test path/to/test.test.ts
+bundle exec rspec spec/services/retry_operation_spec.rb
 ```
 
 Confirm:
 - Test passes
 - Other tests still pass
-- Output pristine (no errors, warnings)
+- Output pristine (no errors, warnings, deprecations)
 
 **Test fails?** Fix code, not test.
 
@@ -289,40 +306,53 @@ Tests-first force edge case discovery before implementing. Tests-after verify yo
 
 ## Example: Bug Fix
 
-**Bug:** Empty email accepted
+**Bug:** Empty email accepted in user registration
 
 **RED**
-```typescript
-test('rejects empty email', async () => {
-  const result = await submitForm({ email: '' });
-  expect(result.error).toBe('Email required');
-});
+```ruby
+# spec/models/user_spec.rb
+RSpec.describe User, type: :model do
+  describe "validations" do
+    subject(:user) { build(:user, email: email) }
+
+    context "when email is empty" do
+      let(:email) { "" }
+
+      it "is invalid" do
+        expect(user).not_to be_valid
+      end
+
+      it "adds error message" do
+        user.valid?
+        expect(user.errors[:email]).to include("can't be blank")
+      end
+    end
+  end
+end
 ```
 
 **Verify RED**
 ```bash
-$ npm test
-FAIL: expected 'Email required', got undefined
+$ bundle exec rspec spec/models/user_spec.rb
+FAIL: expected User to be invalid, but was valid
 ```
 
 **GREEN**
-```typescript
-function submitForm(data: FormData) {
-  if (!data.email?.trim()) {
-    return { error: 'Email required' };
-  }
-  // ...
-}
+```ruby
+# app/models/user.rb
+class User < ApplicationRecord
+  validates :email, presence: true
+end
 ```
 
 **Verify GREEN**
 ```bash
-$ npm test
-PASS
+$ bundle exec rspec spec/models/user_spec.rb
+2 examples, 0 failures
 ```
 
 **REFACTOR**
-Extract validation for multiple fields if needed.
+Extract shared email validation if used across multiple models.
 
 ## Verification Checklist
 
