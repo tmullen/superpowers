@@ -84,6 +84,138 @@ async function gitInit(directory: string) {
 }
 ```
 
+## Rails Four-Layer Pattern
+
+### Layer 1: Strong Parameters (Controller Entry Point)
+**Purpose:** Reject invalid input at HTTP boundary
+
+```ruby
+# app/controllers/projects_controller.rb
+class ProjectsController < ApplicationController
+  def create
+    # Entry point validation - reject bad params immediately
+    @project = Project.create!(project_params)
+    redirect_to @project
+  rescue ActionController::ParameterMissing => e
+    render json: { error: "Missing required parameter: #{e.param}" }, status: :bad_request
+  end
+
+  private
+
+  def project_params
+    params.require(:project).permit(:name, :working_directory, :organization_id)
+  end
+end
+```
+
+### Layer 2: Model Validations (Business Logic)
+**Purpose:** Ensure data makes sense for domain model
+
+```ruby
+# app/models/project.rb
+class Project < ApplicationRecord
+  belongs_to :organization
+
+  # Business logic validation
+  validates :name, presence: true, length: { maximum: 255 }
+  validates :working_directory, presence: true
+  validate :directory_must_exist
+  validate :directory_must_be_writable
+
+  private
+
+  def directory_must_exist
+    return if working_directory.blank?
+    return if Dir.exist?(working_directory)
+
+    errors.add(:working_directory, "does not exist: #{working_directory}")
+  end
+
+  def directory_must_be_writable
+    return if working_directory.blank?
+    return unless Dir.exist?(working_directory)
+    return if File.writable?(working_directory)
+
+    errors.add(:working_directory, "is not writable")
+  end
+end
+```
+
+### Layer 3: Database Constraints (Data Integrity)
+**Purpose:** Prevent invalid data at storage layer
+
+```ruby
+# db/migrate/20250127_create_projects.rb
+class CreateProjects < ActiveRecord::Migration[8.0]
+  def change
+    create_table :projects do |t|
+      t.string :name, null: false
+      t.string :working_directory, null: false
+      t.references :organization, null: false, foreign_key: true
+
+      t.timestamps
+    end
+
+    # Database-level constraints ensure data integrity
+    add_index :projects, :working_directory
+    add_check_constraint :projects, "length(name) > 0", name: "name_not_empty"
+    add_check_constraint :projects, "length(working_directory) > 0", name: "directory_not_empty"
+  end
+end
+```
+
+### Layer 4: Service Object Validation (Workflow Guard)
+**Purpose:** Validate context and workflow requirements
+
+```ruby
+# app/services/project_initializer.rb
+class ProjectInitializer
+  class InvalidProjectError < StandardError; end
+
+  def initialize(project)
+    # Service-level validation for workflow
+    raise ArgumentError, "project required" if project.nil?
+    raise ArgumentError, "project must be persisted" unless project.persisted?
+    raise InvalidProjectError, "project directory blank" if project.working_directory.blank?
+
+    # Debug instrumentation
+    Rails.logger.debug do
+      "ProjectInitializer called: project_id=#{project.id}, " \
+      "directory=#{project.working_directory}, " \
+      "caller=#{caller[0..2].join(' <- ')}"
+    end
+
+    @project = project
+  end
+
+  def call
+    verify_directory_state!
+    initialize_workspace
+    @project
+  end
+
+  private
+
+  def verify_directory_state!
+    # Additional runtime checks
+    unless Dir.exist?(@project.working_directory)
+      raise InvalidProjectError,
+        "Directory disappeared: #{@project.working_directory}"
+    end
+
+    # Environment-specific guard (like Layer 3 TypeScript example)
+    if Rails.env.test? && !@project.working_directory.start_with?(Dir.tmpdir)
+      raise InvalidProjectError,
+        "Refusing to initialize outside temp directory in tests: #{@project.working_directory}"
+    end
+  end
+
+  def initialize_workspace
+    # ... actual initialization
+  end
+end
+```
+
 ## Applying the Pattern
 
 When you find a bug:
