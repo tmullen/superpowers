@@ -21,93 +21,131 @@ Tests must verify real behavior, not mock behavior. Mocks are a means to isolate
 ## Anti-Pattern 1: Testing Mock Behavior
 
 **The violation:**
-```typescript
-// ❌ BAD: Testing that the mock exists
-test('renders sidebar', () => {
-  render(<Page />);
-  expect(screen.getByTestId('sidebar-mock')).toBeInTheDocument();
-});
+```ruby
+# ❌ BAD: Testing that the stub was called, not actual behavior
+RSpec.describe DashboardController, type: :controller do
+  it "renders sidebar" do
+    sidebar = double("Sidebar")
+    allow(Sidebar).to receive(:new).and_return(sidebar)
+    allow(sidebar).to receive(:render).and_return("<div>Mocked</div>")
+
+    get :index
+
+    expect(Sidebar).to have_received(:new)
+  end
+end
 ```
 
 **Why this is wrong:**
-- You're verifying the mock works, not that the component works
+- You're verifying the mock was called, not that the page works
 - Test passes when mock is present, fails when it's not
 - Tells you nothing about real behavior
+- Violates BetterSpecs (testing implementation, not behavior)
 
 **your human partner's correction:** "Are we testing the behavior of a mock?"
 
 **The fix:**
-```typescript
-// ✅ GOOD: Test real component or don't mock it
-test('renders sidebar', () => {
-  render(<Page />);  // Don't mock sidebar
-  expect(screen.getByRole('navigation')).toBeInTheDocument();
-});
+```ruby
+# ✅ GOOD: Test real behavior with request spec
+RSpec.describe "Dashboard", type: :request do
+  describe "GET /dashboard" do
+    it "includes sidebar navigation" do
+      get dashboard_path
 
-// OR if sidebar must be mocked for isolation:
-// Don't assert on the mock - test Page's behavior with sidebar present
+      expect(response).to have_http_status(:success)
+      expect(response.body).to include('<nav class="sidebar"')
+    end
+  end
+end
+
+# OR if testing controller logic in isolation:
+RSpec.describe DashboardController, type: :controller do
+  describe "GET #index" do
+    it "assigns current user's deals" do
+      user = create(:user)
+      sign_in user
+      deal = create(:deal, user: user)
+
+      get :index
+
+      expect(assigns(:deals)).to include(deal)
+    end
+  end
+end
 ```
 
 ### Gate Function
 
 ```
-BEFORE asserting on any mock element:
-  Ask: "Am I testing real component behavior or just mock existence?"
+BEFORE asserting on any mock/stub:
+  Ask: "Am I testing real behavior or just that the mock was called?"
 
-  IF testing mock existence:
-    STOP - Delete the assertion or unmock the component
+  IF testing mock was called:
+    STOP - Delete the assertion or remove the mock
 
-  Test real behavior instead
+  Test real behavior instead (use request specs, real objects)
 ```
 
 ## Anti-Pattern 2: Test-Only Methods in Production
 
 **The violation:**
-```typescript
-// ❌ BAD: destroy() only used in tests
-class Session {
-  async destroy() {  // Looks like production API!
-    await this._workspaceManager?.destroyWorkspace(this.id);
-    // ... cleanup
-  }
-}
+```ruby
+# ❌ BAD: reset_cache! only used in tests
+class Deal < ApplicationRecord
+  def reset_cache!  # Looks like production API!
+    Rails.cache.delete("deal_#{id}_summary")
+    reload
+  end
+end
 
-// In tests
-afterEach(() => session.destroy());
+# In spec
+RSpec.describe Deal, type: :model do
+  after { deal.reset_cache! }
+end
 ```
 
 **Why this is wrong:**
-- Production class polluted with test-only code
+- Production model polluted with test-only code
 - Dangerous if accidentally called in production
 - Violates YAGNI and separation of concerns
-- Confuses object lifecycle with entity lifecycle
+- Confuses object lifecycle with test lifecycle
 
 **The fix:**
-```typescript
-// ✅ GOOD: Test utilities handle test cleanup
-// Session has no destroy() - it's stateless in production
+```ruby
+# ✅ GOOD: Test utilities handle test cleanup
+# Deal model has no reset_cache! method
 
-// In test-utils/
-export async function cleanupSession(session: Session) {
-  const workspace = session.getWorkspaceInfo();
-  if (workspace) {
-    await workspaceManager.destroyWorkspace(workspace.id);
-  }
-}
+# spec/support/cache_helpers.rb
+module CacheHelpers
+  def clear_deal_cache(deal)
+    Rails.cache.delete("deal_#{deal.id}_summary")
+  end
+end
 
-// In tests
-afterEach(() => cleanupSession(session));
+RSpec.configure do |config|
+  config.include CacheHelpers
+end
+
+# In spec
+RSpec.describe Deal, type: :model do
+  let(:deal) { create(:deal) }
+
+  after { clear_deal_cache(deal) }
+
+  # OR use database_cleaner/database truncation
+  # to reset state between tests
+end
 ```
 
 ### Gate Function
 
 ```
-BEFORE adding any method to production class:
+BEFORE adding any method to production model/class:
   Ask: "Is this only used by tests?"
 
   IF yes:
     STOP - Don't add it
-    Put it in test utilities instead
+    Put it in spec/support/ helpers instead
 
   Ask: "Does this class own this resource's lifecycle?"
 
@@ -118,111 +156,160 @@ BEFORE adding any method to production class:
 ## Anti-Pattern 3: Mocking Without Understanding
 
 **The violation:**
-```typescript
-// ❌ BAD: Mock breaks test logic
-test('detects duplicate server', () => {
-  // Mock prevents config write that test depends on!
-  vi.mock('ToolCatalog', () => ({
-    discoverAndCacheTools: vi.fn().mockResolvedValue(undefined)
-  }));
+```ruby
+# ❌ BAD: Mock breaks test logic
+RSpec.describe "Document processing" do
+  it "prevents duplicate documents" do
+    # Mock prevents database write that test depends on!
+    allow(Document).to receive(:create!).and_return(double(id: 1))
 
-  await addServer(config);
-  await addServer(config);  // Should throw - but won't!
-});
+    service = DocumentUploadService.new
+    service.process(file)
+    service.process(file)  # Should raise - but won't!
+
+    # Test passes but doesn't actually test duplicate detection
+  end
+end
 ```
 
 **Why this is wrong:**
-- Mocked method had side effect test depended on (writing config)
+- Mocked method had side effect test depended on (database write)
 - Over-mocking to "be safe" breaks actual behavior
 - Test passes for wrong reason or fails mysteriously
+- Defeats purpose of integration testing
 
 **The fix:**
-```typescript
-// ✅ GOOD: Mock at correct level
-test('detects duplicate server', () => {
-  // Mock the slow part, preserve behavior test needs
-  vi.mock('MCPServerManager'); // Just mock slow server startup
+```ruby
+# ✅ GOOD: Test with real database, mock only external services
+RSpec.describe DocumentUploadService, type: :service do
+  subject(:service) { described_class.new }
 
-  await addServer(config);  // Config written
-  await addServer(config);  // Duplicate detected ✓
-});
+  let(:file) { fixture_file_upload("sample.pdf") }
+
+  before do
+    # Mock only the slow external service (AWS Textract)
+    allow(TextractClient).to receive(:start_document_analysis)
+      .and_return(double(job_id: "job-123"))
+  end
+
+  describe "#process" do
+    context "when processing duplicate file" do
+      before { service.process(file) }
+
+      it "raises error on duplicate" do
+        expect { service.process(file) }
+          .to raise_error(DocumentUploadService::DuplicateError)
+      end
+    end
+  end
+end
 ```
 
 ### Gate Function
 
 ```
-BEFORE mocking any method:
+BEFORE mocking any method in Rails:
   STOP - Don't mock yet
 
   1. Ask: "What side effects does the real method have?"
+     (Database writes? Cache updates? File system changes?)
   2. Ask: "Does this test depend on any of those side effects?"
   3. Ask: "Do I fully understand what this test needs?"
 
   IF depends on side effects:
-    Mock at lower level (the actual slow/external operation)
-    OR use test doubles that preserve necessary behavior
+    Mock at lower level (external APIs, network calls)
+    OR use test fixtures that preserve necessary behavior
     NOT the high-level method the test depends on
 
   IF unsure what test depends on:
     Run test with real implementation FIRST
-    Observe what actually needs to happen
-    THEN add minimal mocking at the right level
+    Use real database (DatabaseCleaner handles cleanup)
+    THEN add minimal mocking at the right level (external services only)
 
   Red flags:
-    - "I'll mock this to be safe"
-    - "This might be slow, better mock it"
+    - "I'll stub this to be safe"
+    - "Database might be slow, better mock ActiveRecord"
     - Mocking without understanding the dependency chain
 ```
 
-## Anti-Pattern 4: Incomplete Mocks
+## Anti-Pattern 4: Incomplete Factory Definitions
 
 **The violation:**
-```typescript
-// ❌ BAD: Partial mock - only fields you think you need
-const mockResponse = {
-  status: 'success',
-  data: { userId: '123', name: 'Alice' }
-  // Missing: metadata that downstream code uses
-};
+```ruby
+# ❌ BAD: Partial factory - only fields you think you need
+FactoryBot.define do
+  factory :document do
+    filename { "test.pdf" }
+    content_type { "application/pdf" }
+    # Missing: uploaded_by, organization, required associations
+  end
+end
 
-// Later: breaks when code accesses response.metadata.requestId
+# Later: breaks when code accesses document.uploaded_by or document.organization
 ```
 
 **Why this is wrong:**
-- **Partial mocks hide structural assumptions** - You only mocked fields you know about
-- **Downstream code may depend on fields you didn't include** - Silent failures
-- **Tests pass but integration fails** - Mock incomplete, real API complete
+- **Partial factories hide structural assumptions** - You only defined fields you know about
+- **Downstream code may depend on fields you didn't include** - Silent failures with nil
+- **Tests pass but integration fails** - Factory incomplete, real records complete
 - **False confidence** - Test proves nothing about real behavior
+- **Violates BetterSpecs** - Test data should match production data structure
 
-**The Iron Rule:** Mock the COMPLETE data structure as it exists in reality, not just fields your immediate test uses.
+**The Iron Rule:** Define COMPLETE factory with ALL required associations and fields, not just fields your immediate test uses.
 
 **The fix:**
-```typescript
-// ✅ GOOD: Mirror real API completeness
-const mockResponse = {
-  status: 'success',
-  data: { userId: '123', name: 'Alice' },
-  metadata: { requestId: 'req-789', timestamp: 1234567890 }
-  // All fields real API returns
-};
+```ruby
+# ✅ GOOD: Complete factory matching production data structure
+FactoryBot.define do
+  factory :document do
+    filename { "test.pdf" }
+    content_type { "application/pdf" }
+    file_size { 1024 }
+    uploaded_at { Time.current }
+
+    # Required associations
+    association :uploaded_by, factory: :user
+    association :organization
+    association :deal
+
+    # State
+    status { :pending }
+
+    # Traits for variations
+    trait :processed do
+      status { :processed }
+      processed_at { Time.current }
+    end
+
+    trait :with_classification do
+      after(:create) do |document|
+        create(:document_classification, document: document)
+      end
+    end
+  end
+end
 ```
 
 ### Gate Function
 
 ```
-BEFORE creating mock responses:
-  Check: "What fields does the real API response contain?"
+BEFORE creating factories:
+  Check: "What fields and associations does the real model require?"
 
   Actions:
-    1. Examine actual API response from docs/examples
-    2. Include ALL fields system might consume downstream
-    3. Verify mock matches real response schema completely
+    1. Examine model validations and associations
+    2. Include ALL required fields and associations
+    3. Add traits for common variations (don't create multiple factories)
+    4. Verify factory can create valid record: build(:document).valid?
 
   Critical:
-    If you're creating a mock, you must understand the ENTIRE structure
-    Partial mocks fail silently when code depends on omitted fields
+    If you're creating a factory, it must create VALID production-like records
+    Partial factories fail silently when code depends on omitted fields/associations
 
-  If uncertain: Include all documented fields
+  Rails-specific:
+    - Include all belongs_to associations (required by default in Rails 5+)
+    - Include all presence validations
+    - Use traits for state variations, not separate factories
 ```
 
 ## Anti-Pattern 5: Integration Tests as Afterthought
