@@ -119,6 +119,128 @@ You MUST complete each phase before proceeding to the next.
    - Keep tracing up until you find the source
    - Fix at source, not at symptom
 
+6. **Rails-Specific Debugging Tools**
+
+   **Console Investigation:**
+   ```bash
+   # Start Rails console to inspect state
+   bundle exec rails console
+
+   # In console - inspect model state
+   User.find(123).attributes
+   Deal.where(status: :pending).count
+
+   # Check associations
+   deal = Deal.first
+   deal.documents.reload.count
+
+   # Verify validations
+   user = User.new(email: "")
+   user.valid?  # => false
+   user.errors.full_messages  # => ["Email can't be blank"]
+
+   # Check environment
+   Rails.env          # => "development"
+   Rails.configuration.active_job.queue_adapter  # Check job adapter
+   ```
+
+   **Log Analysis:**
+   ```bash
+   # Tail logs in real-time
+   tail -f log/development.log
+   tail -f log/test.log
+
+   # Search for specific errors
+   grep "ERROR" log/development.log
+   grep "ActiveRecord" log/development.log | tail -20
+
+   # Filter by timestamp
+   grep "2025-01-27" log/production.log | grep "DocumentPipeline"
+   ```
+
+   **Database Debugging:**
+   ```bash
+   # Check migration status
+   bundle exec rails db:migrate:status
+
+   # Inspect schema
+   bundle exec rails db:schema:dump
+
+   # Direct SQL queries in console
+   ActiveRecord::Base.connection.execute("SHOW TABLES")
+   ActiveRecord::Base.connection.execute("DESCRIBE users")
+
+   # Enable query logging
+   ActiveRecord::Base.logger = Logger.new(STDOUT)
+   User.where(email: "test@example.com").to_sql
+   ```
+
+   **Breakpoint Debugging:**
+   ```ruby
+   # Add to code where investigation needed
+   require 'debug'
+   debugger  # Execution pauses here
+
+   # Or with byebug gem
+   byebug
+
+   # In debugger:
+   # - Type variable names to inspect
+   # - 'continue' to resume
+   # - 'step' to step through
+   # - 'backtrace' or 'bt' to see stack
+   ```
+
+   **Route Debugging:**
+   ```bash
+   # List all routes
+   bundle exec rails routes
+
+   # Find specific route
+   bundle exec rails routes | grep documents
+   bundle exec rails routes | grep "POST.*deals"
+
+   # Detailed route info
+   bundle exec rails routes -c documents  # By controller
+   bundle exec rails routes -g document   # By pattern
+   ```
+
+   **Background Job Debugging:**
+   ```bash
+   # In console - check job status
+   SolidQueue::Job.where(queue_name: "default").count
+   SolidQueue::Job.where(finished_at: nil).count  # Pending jobs
+
+   # Retry failed job
+   SolidQueue::Job.find(123).retry
+
+   # Run job synchronously in tests
+   perform_enqueued_jobs do
+     DocumentProcessorJob.perform_later(document)
+   end
+   ```
+
+   **ActiveRecord Query Analysis:**
+   ```ruby
+   # In console - explain queries
+   User.where(email: "test@example.com").explain
+
+   # Check for N+1 queries
+   users = User.includes(:deals).limit(10)
+   users.each { |u| puts u.deals.count }  # No N+1 with includes
+
+   # Benchmark queries
+   require 'benchmark'
+   Benchmark.ms { User.where(email: "test@example.com").first }
+   ```
+
+   **Stack Trace Reading (Rails-specific):**
+   - Rails adds framework noise to stack traces
+   - Focus on lines from `app/` directory (your code)
+   - Skip lines from `gems/` (framework code)
+   - Look for pattern: `app/models/user.rb:42:in 'validate_email'`
+   - Recent versions of Rails filter app frames automatically
+
 ### Phase 2: Pattern Analysis
 
 **Find the pattern before fixing:**
